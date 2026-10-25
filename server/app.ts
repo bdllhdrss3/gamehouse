@@ -150,12 +150,12 @@ export function createServer(options: ServerOptions) {
     const origin = req.headers.origin;
     return (!origin && !required) || origin === expectedOrigin(req);
   }
-  function identity(req: IncomingMessage): { you: string; expires: number } | undefined {
+  function identity(req: IncomingMessage): { you: string; expires: number; token: string } | undefined {
     const token = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return;
     const row = db.prepare('SELECT public_id, expires_at FROM sessions WHERE token_hash=?').get(hash(token)) as
       { public_id: string; expires_at: number } | undefined;
-    return row && row.expires_at > Date.now() ? { you: row.public_id, expires: row.expires_at } : undefined;
+    return row && row.expires_at > Date.now() ? { you: row.public_id, expires: row.expires_at, token } : undefined;
   }
   function projected(room: Room): Room {
     return {
@@ -544,21 +544,23 @@ export function createServer(options: ServerOptions) {
         if (path === '/api/session') {
           reject(validOrigin(req) && req.headers['sec-fetch-site'] !== 'cross-site', 'ORIGIN', 'Origin not allowed.');
           allow(`session:${req.socket.remoteAddress ?? 'unknown'}`, 120);
-          let session = identity(req);
-          if (!session) {
+          const session = identity(req);
+          const expires = Date.now() + sessionTtlMs;
+          let token = session?.token;
+          let you = session?.you;
+          if (!token || !you) {
             const count = db.prepare('SELECT count(*) AS n FROM sessions WHERE expires_at>?').get(Date.now()) as { n: number };
             reject(count.n < maxSessions, 'CAPACITY', 'The server guest limit has been reached.');
-            const token = randomBytes(32).toString('base64url');
-            const you = randomUUID();
-            const expires = Date.now() + sessionTtlMs;
-            try {
-              db.prepare('INSERT INTO sessions(token_hash,public_id,expires_at) VALUES(?,?,?)').run(hash(token), you, expires);
-            } catch (error) { degraded = true; throw error; }
-            const secure = expectedOrigin(req).startsWith('https:') ? '; Secure' : '';
-            res.setHeader('Set-Cookie', `${cookieName}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(sessionTtlMs / 1000)}${secure}`);
-            session = { you, expires };
+            token = randomBytes(32).toString('base64url');
+            you = randomUUID();
           }
-          json(res, 200, { you: session.you });
+          try {
+            if (session) db.prepare('UPDATE sessions SET expires_at=? WHERE token_hash=?').run(expires, hash(token));
+            else db.prepare('INSERT INTO sessions(token_hash,public_id,expires_at) VALUES(?,?,?)').run(hash(token), you, expires);
+          } catch (error) { degraded = true; throw error; }
+          const secure = expectedOrigin(req).startsWith('https:') ? '; Secure' : '';
+          res.setHeader('Set-Cookie', `${cookieName}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(sessionTtlMs / 1000)}${secure}`);
+          json(res, 200, { you });
           return;
         }
         json(res, 404, { error: 'Not found.' }); return;

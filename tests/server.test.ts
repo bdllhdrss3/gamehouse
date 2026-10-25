@@ -131,6 +131,22 @@ describe('authoritative room server', () => {
     await waitFor(async () => !(await join(b, state.invite)).seats.find(s => s.id === a.you)?.online);
   });
 
+  it('renews a returning guest session without changing its identity', async () => {
+    const first = await fetch(`${url}/api/session`);
+    const cookie = first.headers.get('set-cookie')!.split(';')[0];
+    const { you } = await first.json() as { you: string };
+    const db = new DatabaseSync(databasePath);
+    db.prepare('UPDATE sessions SET expires_at=?').run(Date.now() + 60_000);
+    db.close();
+    const again = await fetch(`${url}/api/session`, { headers: { Cookie: cookie } });
+    expect((await again.json() as { you: string }).you).toBe(you);
+    expect(again.headers.get('set-cookie')!.split(';')[0]).toBe(cookie);
+    const check = new DatabaseSync(databasePath, { readOnly: true });
+    const row = check.prepare('SELECT expires_at FROM sessions').get() as { expires_at: number };
+    check.close();
+    expect(row.expires_at).toBeGreaterThan(Date.now() + 29 * 24 * 60 * 60_000);
+  });
+
   it('requires human readiness and host start; rejects stale, out-of-turn, invalid and client-valued dice commands', async () => {
     const a = await guest(), b = await guest();
     let state = await create(a);

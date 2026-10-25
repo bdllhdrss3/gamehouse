@@ -27,8 +27,9 @@ test('new players choose their name before local play or joining a room', async 
     await expect(page.getByRole('button', { name: 'Let’s play' })).toBeDisabled();
     await nickname.fill('Sam');
     await page.getByRole('button', { name: 'Let’s play' }).click();
-    await expect(page.locator('.turn-banner')).toContainText('Sam, your turn');
-    await expect(page.locator('.turn-splash')).toHaveCount(0);
+    await expect(page.locator('.match-player.current')).toContainText('Sam');
+    await expect(page.locator('.roll-dice')).toHaveClass(/mine/);
+    await expect(page.locator('.turn-banner, .turn-splash')).toHaveCount(0);
     const guest = await context.newPage();
     await guest.goto('/?room=ABCD23');
     await expect(guest.getByRole('textbox', { name: 'Your nickname', exact: true })).toHaveValue('Sam');
@@ -53,31 +54,69 @@ test(`Ludo celebrates the named winner without blocking the board and supports r
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto('/');
   await page.getByRole('button', { name: /Pick up your Ludo game/ }).click();
+  await expect(page.locator('.board-callout')).toContainText('Finish it!');
+  await expect(page.locator('.roll-dice')).toContainText('Finish it!');
   await page.getByRole('button', { name: /Move Token 4/ }).click();
+  await expect(page.locator('.board-callout.ko')).toContainText('K.O.!');
+  await expect(page.locator('.winner-result')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'AlexandertheChampion wins!' })).toBeVisible();
+  await expect(page.locator('.board-callout')).toHaveCount(0);
   await expect(page.locator('.winner-result')).toContainText('All four pieces home. Beautifully played.');
   await expect(page.locator('.game-board')).toBeVisible();
-  await expect(page.locator('.turn-banner, .turn-splash, .roll-dice')).toHaveCount(0);
+  await expect(page.locator('.turn-splash, .roll-dice')).toHaveCount(0);
   if (motion === 'no-preference') {
     await expect(page.locator('canvas')).toBeVisible();
     await expect(page.locator('canvas')).toHaveCount(0, { timeout: 10000 });
   } else await expect(page.locator('canvas')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   for (const width of [320, 375, 1280]) {
-    await page.setViewportSize({ width, height: 850 });
+    await page.setViewportSize({ width, height: width < 768 ? 640 : 850 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width < 768) expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true);
     await page.screenshot({ path: `test-results/ludo-winner-${motion}-${width}.png`, fullPage: true });
   }
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
   expect(accessibility.violations).toEqual([]);
   await page.getByRole('button', { name: 'Play again' }).click();
   await expect(page.locator('.winner-result')).toHaveCount(0);
-  await expect(page.locator('.turn-banner')).toContainText('Maple Bunny, your turn');
+  await expect(page.locator('.match-player.current')).toContainText('Maple Bunny');
+  await expect(page.locator('.roll-dice')).toHaveClass(/mine/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('little-table-match-v1')!));
   expect(saved.id).not.toBe(game.id);
   expect(saved.players[1].name).toBe('AlexandertheChampion');
+  const recent = await page.evaluate(() => JSON.parse(localStorage.getItem('little-table-history-v1')!));
+  expect(recent[0]).toMatchObject({ id: game.id, preset: 'ludo', winner: 'AlexandertheChampion' });
 });
 }
+
+test('finish cue waits for the exact roll and mobile matches fit without scrolling', async ({ page }) => {
+  const players = localPlayers(4, false, 'Maple Bunny').map((p, i) => i ? { ...p, name: `Longname Player ${i}` } : p);
+  const roll = createGame('ludo', players, 'mobile-roll');
+  const move = { ...createGame('ludo', players, 'mobile-move'), phase: 'move' as const, dice: 6, positions: [[-1, 10, 20, 30], [-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1]] };
+  const close = { ...createGame('ludo', players, 'mobile-close'), phase: 'move' as const, dice: 3, positions: [[56, 56, 56, 50], [-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1]] };
+  await page.goto('/');
+  for (const state of [roll, move, close]) {
+    await page.evaluate(s => localStorage.setItem('little-table-match-v1', JSON.stringify(s)), state);
+    for (const [width, height] of [[320, 568], [360, 640], [375, 667], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      await page.goto('/');
+      await page.getByRole('button', { name: /Pick up your Ludo game/ }).click();
+      await expect(page.locator('.game-board')).toBeVisible();
+      if (state === close) await expect(page.locator('.board-callout')).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight && document.documentElement.scrollWidth <= innerWidth), `${state.id} ${width}x${height}`).toBe(true);
+      const fab = (await page.locator('.roll-dice').boundingBox())!;
+      expect(fab.x + fab.width).toBeLessThanOrEqual(width - 12);
+      expect(fab.y + fab.height).toBeLessThanOrEqual(height - 12);
+      for (const box of await Promise.all((await page.locator('.board-wrap .game-board, .match-player, .token-button, .match-log').all()).map(l => l.boundingBox()))) {
+        if (!box) continue;
+        const overlaps = box.x < fab.x + fab.width && fab.x < box.x + box.width && box.y < fab.y + fab.height && fab.y < box.y + box.height;
+        expect(overlaps, `${state.id} ${width}x${height}`).toBe(false);
+      }
+      expect((await page.locator('.board-wrap .game-board').boundingBox())!.height).toBeGreaterThan(200);
+    }
+  }
+  await page.screenshot({ path: 'test-results/mobile-match-375.png' });
+});
 
 test('profile avatar, suggested names, themes and mobile local game resume', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
@@ -105,7 +144,7 @@ test('profile avatar, suggested names, themes and mobile local game resume', asy
   await page.getByLabel('Player 2 piece').selectOption('knight');
   await page.getByRole('button', { name: 'Let’s play' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Ludo');
-  await expect(page.locator('.turn-banner')).toContainText('Maple Bunny, your turn');
+  await expect(page.locator('.match-player.current')).toContainText('Maple Bunny');
   await expect(page.getByText('Cozy Clover', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Roll dice', exact: true }).click();
   await expect(page.locator('.match-log')).toContainText(/rolled/);
@@ -128,12 +167,12 @@ test('both snake presets finish valid local matches, support board shuffle, and 
   await page.getByRole('button', { name: 'Let’s play' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Turbo');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Sky Rocket');
-  await expect(page.locator('.turn-banner')).toBeVisible();
-  await expect(page.locator('.turn-splash')).toHaveCount(0);
+  await expect(page.locator('.roll-dice')).toHaveClass(/mine/);
   for (let i = 0; i < 350; i++) {
-    if (await page.getByRole('button', { name: 'Play again' }).count()) break;
+    if (await page.locator('.winner-result, .board-callout.ko').count()) break;
     await page.getByRole('button', { name: 'Roll dice', exact: true }).click();
   }
+  await expect(page.locator('.board-callout.ko')).toContainText('K.O.!');
   await expect(page.getByRole('button', { name: 'Play again' })).toBeVisible();
   const first = await page.evaluate(() => JSON.parse(localStorage.getItem('little-table-match-v1')!).id);
   await page.getByRole('button', { name: 'Play again' }).click();

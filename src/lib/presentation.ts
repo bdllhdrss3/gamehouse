@@ -30,7 +30,7 @@ export function usePresentation(game: Game, reduced: boolean, haptics: boolean) 
             ...g, positions: g.positions.map((p, i) => i === event.player ? p.map((value, t) => t === event.token ? pos : value) : p),
           })), time);
         }
-      } else if (event.type === 'roll' && !reduced) time += 300;
+      } else if (event.type === 'roll' && !reduced) time += 650;
     }
     later(() => { setShown(game); setBusy(false); }, time + (reduced ? 0 : 80));
     return () => { cancelled = true; timers.forEach(clearTimeout); };

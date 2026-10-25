@@ -53,14 +53,25 @@ class AudioFeedback {
   turn() {
     [587, 784, 988].forEach((f, i) => this.tone(f, 0.16, i * 0.09, 'triangle'));
   }
+  finish() {
+    this.tone(196, 0.18, 0, 'sawtooth', 150);
+    this.tone(147, 0.42, 0.2, 'sawtooth', 98);
+  }
+  ko() {
+    this.tone(110, 0.5, 0, 'sawtooth', 38);
+    this.tone(70, 0.7, 0.02, 'sine', 30);
+    [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.28, 0.55 + i * 0.12, 'triangle'));
+  }
   play(type: GameEvent['type']) {
-    if (type === 'roll') [0, 0.055, 0.12, 0.2].forEach((delay, i) => this.tone(240 + i * 35, 0.04, delay, 'triangle', 90));
+    if (type === 'roll') {
+      [0, 0.07, 0.15, 0.24, 0.34, 0.45].forEach((delay, i) => this.tone(520 - i * 45, 0.035, delay, 'triangle', 180));
+      this.tone(150, 0.14, 0.6, 'sine', 70);
+    }
     if (type === 'move') this.tone(430, 0.065, 0, 'sine', 570);
     if (type === 'ladder') [392, 494, 587, 784].forEach((f, i) => this.tone(f, 0.14, i * 0.065));
     if (type === 'snake') this.tone(430, 0.35, 0, 'triangle', 120);
     if (type === 'capture') { this.tone(180, 0.1, 0, 'triangle', 80); this.tone(740, 0.1, 0.08); }
     if (type === 'home') [520, 660].forEach((f, i) => this.tone(f, 0.15, i * 0.08));
-    if (type === 'win') [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.28, i * 0.12, 'triangle'));
   }
 }
 export const audio = new AudioFeedback();
