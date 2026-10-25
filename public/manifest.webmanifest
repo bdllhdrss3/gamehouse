@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "Little Table",
+  "short_name": "Little Table",
+  "description": "A little table for Ludo, Snakes & Ladders, and good company.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#26756c",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
