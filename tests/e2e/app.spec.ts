@@ -1,8 +1,82 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { createGame, localPlayers } from '../../shared/game';
 
 declare global {
   interface Window { __testAudio?: { contexts: AudioContext[]; voices: number } }
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('little-table-settings-v1')) localStorage.setItem('little-table-settings-v1', JSON.stringify({ name: 'Maple Bunny', avatar: 'bunny', piece: 'king', theme: 'system', muted: false, volume: .45, reduced: false, haptics: false, boardTheme: 'meadow' }));
+  });
+});
+
+test('new players choose their name before local play or joining a room', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', reducedMotion: 'reduce' });
+  const page = await context.newPage();
+  try {
+    await page.goto('/');
+    await page.getByRole('button', { name: /THE FRIENDLY RIVALRY/ }).click();
+    const nickname = page.getByRole('textbox', { name: 'Your nickname', exact: true });
+    await expect(page.getByRole('heading', { name: 'What should we call you?' })).toBeVisible();
+    await expect(nickname).toHaveValue('');
+    await expect(nickname).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Let’s play' })).toBeDisabled();
+    await nickname.fill('   ');
+    await expect(page.getByRole('button', { name: 'Let’s play' })).toBeDisabled();
+    await nickname.fill('Sam');
+    await page.getByRole('button', { name: 'Let’s play' }).click();
+    await expect(page.locator('.turn-banner')).toContainText('Sam, your turn');
+    await expect(page.locator('.turn-splash')).toHaveCount(0);
+    const guest = await context.newPage();
+    await guest.goto('/?room=ABCD23');
+    await expect(guest.getByRole('textbox', { name: 'Your nickname', exact: true })).toHaveValue('Sam');
+    await guest.getByRole('textbox', { name: 'Your nickname', exact: true }).fill('');
+    await expect(guest.getByRole('button', { name: 'Join the table' })).toBeDisabled();
+    await guest.getByRole('button', { name: 'Suggest a new nickname' }).click();
+    await expect(guest.getByRole('button', { name: 'Join the table' })).toBeEnabled();
+  } finally { await context.close(); }
+});
+
+for (const motion of ['reduce', 'no-preference'] as const) {
+test(`Ludo celebrates the named winner without blocking the board and supports rematch (${motion})`, async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: motion });
+  const players = localPlayers(2, false, 'Maple Bunny');
+  players[1].name = 'AlexandertheChampion';
+  const game = createGame('ludo', players, 'winning-ludo-test');
+  game.turn = 1;
+  game.phase = 'move';
+  game.dice = 1;
+  game.positions[1] = [56, 56, 56, 55];
+  await page.addInitScript(snapshot => localStorage.setItem('little-table-match-v1', JSON.stringify(snapshot)), game);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Pick up your Ludo game/ }).click();
+  await page.getByRole('button', { name: /Move Token 4/ }).click();
+  await expect(page.getByRole('heading', { name: 'AlexandertheChampion wins!' })).toBeVisible();
+  await expect(page.locator('.winner-result')).toContainText('All four pieces home. Beautifully played.');
+  await expect(page.locator('.game-board')).toBeVisible();
+  await expect(page.locator('.turn-banner, .turn-splash, .roll-dice')).toHaveCount(0);
+  if (motion === 'no-preference') {
+    await expect(page.locator('canvas')).toBeVisible();
+    await expect(page.locator('canvas')).toHaveCount(0, { timeout: 10000 });
+  } else await expect(page.locator('canvas')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  for (const width of [320, 375, 1280]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/ludo-winner-${motion}-${width}.png`, fullPage: true });
+  }
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.getByRole('button', { name: 'Play again' }).click();
+  await expect(page.locator('.winner-result')).toHaveCount(0);
+  await expect(page.locator('.turn-banner')).toContainText('Maple Bunny, your turn');
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('little-table-match-v1')!));
+  expect(saved.id).not.toBe(game.id);
+  expect(saved.players[1].name).toBe('AlexandertheChampion');
+});
 }
 
 test('profile avatar, suggested names, themes and mobile local game resume', async ({ page }) => {
@@ -31,7 +105,7 @@ test('profile avatar, suggested names, themes and mobile local game resume', asy
   await page.getByLabel('Player 2 piece').selectOption('knight');
   await page.getByRole('button', { name: 'Let’s play' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Ludo');
-  await expect(page.locator('.turn-banner')).toContainText("It's your turn, Maple Bunny!");
+  await expect(page.locator('.turn-banner')).toContainText('Maple Bunny, your turn');
   await expect(page.getByText('Cozy Clover', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Roll dice', exact: true }).click();
   await expect(page.locator('.match-log')).toContainText(/rolled/);
@@ -54,8 +128,8 @@ test('both snake presets finish valid local matches, support board shuffle, and 
   await page.getByRole('button', { name: 'Let’s play' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Turbo');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Sky Rocket');
-  await expect(page.locator('.turn-splash')).toContainText('Your turn!');
-  await expect(page.locator('.turn-splash')).toHaveCount(0, { timeout: 3000 });
+  await expect(page.locator('.turn-banner')).toBeVisible();
+  await expect(page.locator('.turn-splash')).toHaveCount(0);
   for (let i = 0; i < 350; i++) {
     if (await page.getByRole('button', { name: 'Play again' }).count()) break;
     await page.getByRole('button', { name: 'Roll dice', exact: true }).click();

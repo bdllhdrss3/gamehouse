@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, ArrowRight, Check, ChevronDown, Copy, Dice5, Home, Link, Moon, Plus, RotateCcw, Settings, Share2, ShieldCheck, Shuffle, Sparkles, Sun, Users, Volume2, VolumeX, Wifi, WifiOff, X, Zap } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, Copy, Dice5, Home, Link, Moon, Plus, RotateCcw, Settings, Share2, ShieldCheck, Shuffle, Sparkles, Sun, Trophy, Users, Volume2, VolumeX, Wifi, WifiOff, X, Zap } from 'lucide-react';
 import { z } from 'zod';
 import { avatarInfo, avatarSchema, boardVariants, botToken, chessPieceInfo, chessPieceSchema, createGame, gameSchema, getBoard, legalMoves, localPlayers, reachable, names, suggestedName, transition, type Action, type AvatarId, type ChessPieceId, type Game, type Player, type Preset } from '../shared/game';
 import type { Room } from '../shared/protocol';
@@ -25,7 +25,7 @@ type View = 'home' | 'setup' | 'join' | 'room' | 'local';
 const profileKey = 'little-table-settings-v1';
 const localKey = 'little-table-match-v1';
 function initialSettings(): SettingsValue {
-  const defaults: SettingsValue = { name: suggestedName(), avatar: 'bunny', piece: 'king', theme: 'system', muted: false, volume: .45, reduced: false, haptics: false, boardTheme: 'meadow' };
+  const defaults: SettingsValue = { name: '', avatar: 'bunny', piece: 'king', theme: 'system', muted: false, volume: .45, reduced: false, haptics: false, boardTheme: 'meadow' };
   const raw = readStorage(profileKey);
   if (!raw) return defaults;
   try { return settingsSchema.parse(JSON.parse(raw)); }
@@ -255,11 +255,12 @@ export default function App() {
   const activeGame = view === 'local' ? localGame : view === 'room' ? room?.game : null;
   const updateAllowed = !activeGame || activeGame.phase === 'finished';
   const profileEditor = (id: string) => <div className="profile-editor">
+    {id === 'nickname' && <h2 className="name-prompt">What should we call you?</h2>}
     <div className="field"><label htmlFor={id}>Your nickname</label><div className="input-with-button">
-      <input id={id} autoComplete="nickname" maxLength={20} placeholder="Type your name..." value={settings.name} onChange={e => setSettings(s => ({ ...s, name: e.target.value }))} onFocus={e => e.currentTarget.select()} aria-describedby={`${id}-help`} aria-invalid={!validName} />
+      <input id={id} autoFocus={id === 'nickname'} autoComplete="nickname" maxLength={20} required placeholder="Your name or nickname" value={settings.name} onChange={e => setSettings(s => ({ ...s, name: e.target.value }))} onFocus={e => e.currentTarget.select()} aria-describedby={`${id}-help`} aria-invalid={settings.name.length > 0 && !validName} />
       {settings.name && <button type="button" className="icon-button" aria-label="Clear nickname" title="Clear name" onClick={() => { setSettings(s => ({ ...s, name: '' })); document.getElementById(id)?.focus(); }}><X size={17} /></button>}
       <button type="button" className="icon-button" aria-label="Suggest a new nickname" title="Shuffle nickname" onClick={() => setSettings(s => ({ ...s, name: suggestedName() }))}><Shuffle size={19} /></button>
-    </div><small id={`${id}-help`}>{validName ? 'Type any name you want, or shuffle for a playful one.' : 'Enter a nickname with 1-20 characters.'}</small></div>
+    </div><small id={`${id}-help`}>{validName ? 'This is the name everyone at the table will see.' : 'Choose a name with 1-20 characters, or shuffle for a nickname.'}</small></div>
     <AvatarPicker value={settings.avatar} onChange={avatar => setSettings(s => ({ ...s, avatar }))} />
     <ChessPiecePicker value={settings.piece} onChange={piece => setSettings(s => ({ ...s, piece }))} />
   </div>;
@@ -408,14 +409,20 @@ function Match({ game, boardTheme, reduced, haptics, canAct, online, pending, on
     return () => clearTimeout(timer);
   }, [online, current.bot, finished, busy, hidden, onBot, reduced]);
   useEffect(() => {
-    if (!finished || busy || reduced || hidden || lastCelebrated.current === game.id) return;
-    lastCelebrated.current = game.id;
+    if (!finished || shown.phase !== 'finished' || shown.id !== game.id || shown.revision !== game.revision || busy || reduced || hidden || lastCelebrated.current === game.id) return;
     let cancelled = false;
+    let stopCelebration: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     void import('canvas-confetti').then(({ default: confetti }) => {
-      if (!cancelled) void confetti({ particleCount: 60, spread: 65, origin: { y: .65 }, disableForReducedMotion: true, ticks: 140 });
+      if (!cancelled) {
+        lastCelebrated.current = game.id;
+        stopCelebration = () => confetti.reset();
+        void confetti({ particleCount: 60, spread: 65, origin: { y: .65 }, disableForReducedMotion: true, ticks: 140 });
+        timer = setTimeout(stopCelebration, 2500);
+      }
     }).catch(error => console.error('Celebration could not load.', error));
-    return () => { cancelled = true; };
-  }, [finished, busy, reduced, hidden, game.id]);
+    return () => { cancelled = true; clearTimeout(timer); stopCelebration?.(); };
+  }, [finished, shown.phase, shown.id, shown.revision, busy, reduced, hidden, game.id, game.revision]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.repeat || (e.target instanceof HTMLElement && (e.target.closest('input,textarea,select,button,dialog') || e.target.isContentEditable))) return;
@@ -435,22 +442,6 @@ function Match({ game, boardTheme, reduced, haptics, canAct, online, pending, on
   }, [canAct, busy, pending, game.phase, available, onAction]);
   const winner = game.winner === null ? null : game.players[game.winner];
   const enabled = canAct && !busy && !pending && !finished;
-  const [splash, setSplash] = useState<string | null>(null);
-  const announced = useRef('');
-  useEffect(() => {
-    const owner = `${game.id}:${game.turn}`;
-    if (busy || announced.current === owner) return;
-    announced.current = owner;
-    if (finished || current.bot || !canAct) return;
-    setSplash(`${owner}:${game.revision}`);
-    audio.turn();
-    if (haptics && navigator.vibrate) navigator.vibrate([30, 60, 30]);
-  }, [game.id, game.turn, game.revision, finished, current.bot, canAct, haptics, busy]);
-  useEffect(() => {
-    if (!splash) return;
-    const timer = setTimeout(() => setSplash(null), 1400);
-    return () => clearTimeout(timer);
-  }, [splash]);
   const turnColor = boardColors[current.color];
   const boardTitle = game.preset !== 'ludo' ? getBoard(game.preset, game.boardSeed).title : undefined;
   const reach = reachable(game);
@@ -462,36 +453,36 @@ function Match({ game, boardTheme, reduced, haptics, canAct, online, pending, on
     {!winner && <div className={`turn-banner ${current.color} ${canAct ? 'your-turn' : ''}`} style={{ ['--turn-color' as string]: turnColor }} role="status" aria-live="polite">
       <Avatar id={current.avatar} small />
       <div className="turn-banner-copy">
-        <strong>{canAct ? `It's your turn, ${current.name}!` : `${current.name}'s turn`}</strong>
+        <strong>{canAct ? `${current.name}, your turn` : `${current.name}'s turn`}</strong>
         {suspense && <span className="suspense-line">{reach.snakes.length ? "Careful! " : "Lucky chance! "}{suspense}</span>}
-        <span>{busy ? 'Moving piece along the board...' : current.bot ? 'Friendly bot is making a move...' : !canAct ? 'Waiting for this player to act.' : game.phase === 'move' ? `Rolled a ${game.dice}! Tap a bouncing piece or a Move button.` : 'Tap the dice (or press Space) to roll.'}</span>
+        <span>{busy ? 'Moving your piece...' : current.bot ? 'Making a move...' : !canAct ? 'Waiting for your friend.' : game.phase === 'move' ? `You rolled ${game.dice}. Choose a highlighted piece.` : 'Ready when you are.'}</span>
       </div>
-      <span className="turn-step-pill">{game.phase === 'move' ? 'Step 2: Move Piece' : 'Step 1: Roll Dice'}</span>
+      <span className="turn-step-pill">{game.phase === 'move' ? 'Choose a piece' : 'Roll the dice'}</span>
     </div>}
+    {winner && !busy && <section className="winner-result" aria-labelledby="winner-title" style={{ ['--winner-color' as string]: boardColors[winner.color] }}>
+      <div className="winner-portrait"><Trophy size={28} aria-hidden="true" /><Avatar id={winner.avatar} /></div>
+      <div className="winner-copy" role="status"><p className="winner-eyebrow">{names[game.preset]} winner</p><h2 id="winner-title">{winner.name} wins!</h2><p>{game.preset === 'ludo' ? 'All four pieces home. Beautifully played.' : 'Home at last. Beautifully played.'}</p></div>
+      <div className="winner-actions"><button className="button primary" disabled={pending || !rematchAllowed} onClick={onRematch}><RotateCcw size={17} /> {online ? 'Back to lobby' : 'Play again'}</button><button className="button secondary" onClick={onBack}><Home size={17} /> {online ? 'Leave table' : 'All games'}</button>{onShuffle && <button className="button secondary" onClick={onShuffle}><Shuffle size={17} /> New board</button>}{online && !rematchAllowed && <small>Waiting for the host to open the lobby.</small>}</div>
+    </section>}
     <div className="match-layout"><div className={`board-wrap ${!finished ? 'turn-glow' : ''} ${canAct && !finished ? 'my-turn' : ''}`} style={{ ['--turn-color' as string]: turnColor }}>
       <GameBoard game={shown} theme={boardTheme} idle={!busy && !pending} turnLabel={finished ? undefined : canAct ? 'YOUR TURN' : current.bot ? 'BOT TURN' : 'THEIR TURN'} onToken={enabled && game.phase === 'move' ? token => onAction('move', token) : undefined} />
-      {splash && <div className="turn-splash" key={splash} aria-hidden="true" style={{ ['--turn-color' as string]: turnColor }}>
-        <Avatar id={current.avatar} />
-        <strong>Your turn!</strong>
-        <span>{current.name}</span>
-      </div>}
     </div>
       <aside className="match-sidebar">
         <div className="player-list" aria-label="Players">{game.players.map((p, i) => <div className={`match-player ${i === game.turn && !finished ? 'current' : finished ? '' : 'waiting'}`} style={{ ['--turn-color' as string]: boardColors[p.color] }} key={p.id}><Avatar id={p.avatar} small /><div><strong>{p.name}{i === game.turn && !finished && <span className="turn-chip">TURN</span>}</strong><small>{p.bot ? 'Friendly bot' : 'Player'}{game.preset === 'ludo' ? ` / ${game.positions[i].filter(pos => pos === 56).length} home` : ` · ${chessPieceInfo[p.piece].glyph} ${chessPieceInfo[p.piece].label} / ${game.positions[i][0] === 0 ? 'at start' : `square ${game.positions[i][0]}`}`}</small></div><PlayerMark color={p.color} /></div>)}</div>
-        <div className={`turn-panel ${current.color} ${canAct && !finished ? 'active-panel' : ''}`} style={{ ['--turn-color' as string]: turnColor }}>
-          {winner ? <><div className="win-star">★</div><h2>{winner.name} wins!</h2><p>{rematchAllowed ? 'A happy little victory. Another round?' : 'The host can take everyone back to the lobby.'}</p><div className="button-row"><button className="button primary full" disabled={pending || !rematchAllowed} onClick={onRematch}><RotateCcw size={17} /> {online ? 'Back to lobby' : 'Play again'}</button>{onShuffle && <button className="button secondary full" onClick={onShuffle}><Shuffle size={17} /> Shuffle new board</button>}</div></> :
-          <><div className="turn-label"><PlayerMark color={current.color} /><span>{canAct ? 'Your turn now!' : `${current.name}'s turn`}</span></div><p className="turn-instruction">{busy ? 'A little moment of magic...' : current.bot ? 'Your friendly bot is thinking.' : !canAct ? 'Waiting for your friend.' : game.phase === 'move' ? 'Tap a bouncing piece on the board or pick below:' : 'Give the dice a little roll.'}</p>
+        {!winner && <div className={`turn-panel ${current.color} ${canAct && !finished ? 'active-panel' : ''}`} style={{ ['--turn-color' as string]: turnColor }}>
+          {
+          <><div className="turn-label"><PlayerMark color={current.color} /><span>{canAct ? 'Your move' : `${current.name}'s turn`}</span></div><p className="turn-instruction">{busy ? 'Moving your piece...' : current.bot ? 'Your friendly bot is thinking.' : !canAct ? 'Waiting for your friend.' : game.phase === 'move' ? 'Choose a highlighted piece:' : 'Give the dice a little roll.'}</p>
             <button className={`roll-dice ${busy && game.events.some(e => e.type === 'roll') && !reduced ? 'rolling' : ''} ${enabled && game.phase === 'roll' ? 'ready-roll' : ''}`} disabled={!enabled || game.phase !== 'roll'} aria-label="Roll dice" onClick={() => onAction('roll')}>
-              {enabled && game.phase === 'roll' && <span className="dice-pointer" aria-hidden="true">TAP TO ROLL</span>}<DiceFace value={game.dice ?? 5} /><span>{pending ? 'Sending...' : busy ? 'Rolling...' : game.phase === 'move' ? `Rolled ${game.dice}` : 'Roll dice'}</span>
+              <DiceFace value={game.dice ?? 5} /><span>{pending ? 'Sending...' : busy ? 'Rolling...' : game.phase === 'move' ? `Rolled ${game.dice}` : 'Roll dice'}</span>
             </button>
             {game.phase === 'move' && <div className="token-tray" aria-label="Legal tokens">{available.map(t => {
               const pos = game.positions[game.turn][t];
               const dest = pos === -1 ? 'Enter start square' : pos + (game.dice ?? 0) === 56 ? 'Reach HOME! ★' : `Step ${pos} → ${pos + (game.dice ?? 0)}`;
               return <button key={t} className={`token-button ${current.color}`} disabled={!enabled} onClick={() => onAction('move', t)}>Move Token {t + 1}<small>{dest}</small></button>;
             })}</div>}
-            <small className="turn-hint">{online ? 'No rush. This table waits for you.' : game.phase === 'roll' && canAct ? 'Tap the dice or press Space.' : game.phase === 'move' && canAct ? 'Tap the piece on the board or press 1-4.' : 'A little luck goes a long way.'}</small>
+            <small className="turn-hint">{online ? 'No rush. This table waits for you.' : 'A little luck goes a long way.'}</small>
           </>}
-        </div>
+        </div>}
         <div className="match-log" role="status" aria-live="polite" aria-atomic="true">{game.events.length ? game.events.map((event, i) => <p key={`${game.revision}-${i}`}>{event.text}</p>) : <p>{game.preset === 'ludo' ? 'Roll a six to bring a piece out of its base.' : 'Any roll gets you started. Reach the last square exactly.'}</p>}</div>
       </aside>
     </div>
